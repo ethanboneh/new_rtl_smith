@@ -1,0 +1,41 @@
+Loading model: Qwen/Qwen2.5-Coder-3B
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading checkpoint shards: 100%|██████████████████████████| 2/2 [00:00<00:00,  2.26it/s]
+trainable params: 478,937,088 || all params: 3,564,875,776 || trainable%: 13.4349
+/sailhome/ethanboneh/new_rtl_smith/baselines/sft_bugfix_corruptions.py:280: FutureWarning: `tokenizer` is deprecated and will be removed in version 5.0.0 for `Trainer.__init__`. Use `processing_class` instead.
+  trainer = Trainer(
+WARNING:accelerate.utils.other:Detected kernel version 5.4.0, which is below the recommended minimum of 5.5.0; this can cause the process to hang. It is recommended to upgrade the kernel to the minimum version or higher.
+Starting training from scratch...
+The tokenizer has new PAD/BOS/EOS tokens that differ from the model config and generation config. The model config and generation config were aligned accordingly, being updated with the tokenizer's values. Updated tokens: {'bos_token_id': None, 'pad_token_id': 151643}.
+Traceback (most recent call last):
+  File "/sailhome/ethanboneh/new_rtl_smith/baselines/sft_bugfix_corruptions.py", line 328, in <module>
+    train(
+  File "/sailhome/ethanboneh/new_rtl_smith/baselines/sft_bugfix_corruptions.py", line 295, in train
+    trainer.train()
+  File "/matx/u/ethanboneh/conda/kernel-bench/lib/python3.10/site-packages/transformers/trainer.py", line 2328, in train
+    return inner_training_loop(
+  File "/matx/u/ethanboneh/conda/kernel-bench/lib/python3.10/site-packages/transformers/trainer.py", line 2378, in _inner_training_loop
+    train_dataloader = self.get_train_dataloader()
+  File "/matx/u/ethanboneh/conda/kernel-bench/lib/python3.10/site-packages/transformers/trainer.py", line 1143, in get_train_dataloader
+    return self._get_dataloader(
+  File "/matx/u/ethanboneh/conda/kernel-bench/lib/python3.10/site-packages/transformers/trainer.py", line 1098, in _get_dataloader
+    dataset = self._remove_unused_columns(dataset, description=description)
+  File "/matx/u/ethanboneh/conda/kernel-bench/lib/python3.10/site-packages/transformers/trainer.py", line 1024, in _remove_unused_columns
+    raise ValueError(
+ValueError: No columns in the dataset match the model's forward method signature: (input_ids, attention_mask, position_ids, past_key_values, inputs_embeds, labels, use_cache, cache_position, logits_to_keep, kwargs, label_ids, labels, label). The following columns have been ignored: [input, output]. Please check the dataset and model. You may need to set `remove_unused_columns=False` in `TrainingArguments`.
+Traceback (most recent call last):
+  File "/sailhome/ethanboneh/new_rtl_smith/baselines/sft_bugfix_corruptions.py", line 328, in <module>
+    train(
+  File "/sailhome/ethanboneh/new_rtl_smith/baselines/sft_bugfix_corruptions.py", line 295, in train
+    trainer.train()
+  File "/matx/u/ethanboneh/conda/kernel-bench/lib/python3.10/site-packages/transformers/trainer.py", line 2328, in train
+    return inner_training_loop(
+  File "/matx/u/ethanboneh/conda/kernel-bench/lib/python3.10/site-packages/transformers/trainer.py", line 2378, in _inner_training_loop
+    train_dataloader = self.get_train_dataloader()
+  File "/matx/u/ethanboneh/conda/kernel-bench/lib/python3.10/site-packages/transformers/trainer.py", line 1143, in get_train_dataloader
+    return self._get_dataloader(
+  File "/matx/u/ethanboneh/conda/kernel-bench/lib/python3.10/site-packages/transformers/trainer.py", line 1098, in _get_dataloader
+    dataset = self._remove_unused_columns(dataset, description=description)
+  File "/matx/u/ethanboneh/conda/kernel-bench/lib/python3.10/site-packages/transformers/trainer.py", line 1024, in _remove_unused_columns
+    raise ValueError(
+ValueError: No columns in the dataset match the model's forward method signature: (input_ids, attention_mask, position_ids, past_key_values, inputs_embeds, labels, use_cache, cache_position, logits_to_keep, kwargs, label_ids, labels, label). The following columns have been ignored: [input, output]. Please check the dataset and model. You may need to set `remove_unused_columns=False` in `TrainingArguments`.

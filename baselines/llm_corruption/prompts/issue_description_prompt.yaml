@@ -1,0 +1,36 @@
+name: sv_issue_description
+parameters:
+  issue_styles:
+    - "Bug report format: Describe the unexpected behavior, when it occurs, and the expected correct behavior."
+    - "Test failure format: Describe what test case fails, the observed output, and the expected output."
+    - "Symptom-based format: Describe the symptoms observed during simulation or formal verification."
+    - "Lint-based format: Describe the linting error or warning that was detected, and what RTL design principle was violated."
+system: |-
+  You are a verification engineer writing a bug report for a SystemVerilog RTL design issue.
+
+  Given the original (clean) code and the buggy code, write a concise but detailed issue description that:
+  1. Clearly describes what the bug is
+  2. Explains when/under what conditions the bug manifests
+  3. Describes the expected behavior vs. the actual incorrect behavior
+  4. Optionally mentions what specific test cases or scenarios would fail
+  5. If applicable, mentions what linting rule or RTL design principle was violated
+
+  Write the issue description in a clear, professional style similar to a GitHub issue or bug tracker entry.
+
+  Your response should be formatted as follows:
+
+  Issue Description:
+  <issue_description_text>
+instance: |-
+  Original Code:
+  ```
+  {{clean_code}}
+  ```
+
+  Buggy Code:
+  ```
+  {{corrupted_code}}
+  ```
+
+  Write an issue description for the bug introduced in the buggy code:
+

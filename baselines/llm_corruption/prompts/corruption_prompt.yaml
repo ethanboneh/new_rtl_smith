@@ -1,0 +1,75 @@
+name: sv_corrupt_linter_aware
+parameters:
+  lint_focused_bugs:
+    - "Latch inference: Create incomplete conditional assignments in combinational blocks, missing default cases in case statements, or incomplete if-else chains that cause latches to be inferred."
+    - "Sequential/Combinational separation: Mix combinational and sequential logic incorrectly - assign signals in both always_comb and always_ff blocks, or use blocking assignments in sequential blocks."
+    - "Reset handling: Leave signals uninitialized in reset blocks, use incorrect reset values, or mix synchronous and asynchronous reset styles inconsistently."
+    - "Signal width mismatches: Use incorrect bit widths in assignments, concatenations, or comparisons that cause width warnings."
+    - "Blocking vs non-blocking: Use blocking assignments (=) in sequential blocks or non-blocking (<=) in combinational blocks incorrectly."
+    - "Multi-driven signals: Drive the same signal from multiple always blocks or assign statements."
+    - "Incomplete sensitivity lists: Missing signals in combinational always blocks that should trigger recomputation."
+    - "Clock domain crossing: Mix signals from different clock domains without proper synchronization."
+    - "State machine encoding: Use unsafe state encodings or missing default states that cause synthesis issues."
+    - "Combinational loops: Create feedback paths in combinational logic that create loops."
+  tips:
+    - "The modified code MUST be valid SystemVerilog and should not produce compilation or syntax errors."
+    - "Do not change the module name, port list (names, widths, directions), or interface of the design."
+    - "Focus on bugs that will be caught by Verilator linting rules - these are deeper RTL design issues."
+    - "The bug should target specific lint rules like WIDTH, LATCH, BLKSEQ, MULTIDRIVEN, etc."
+    - "Prefer bugs that violate fundamental RTL design principles (latch inference, proper reset, combinational/sequential separation)."
+    - "The design should still appear plausible and maintain its overall structure and coding style."
+    - "Avoid making the bug trivially obvious (e.g., forcing outputs to constants or removing key logic)."
+    - "Please DO NOT INCLUDE COMMENTS IN THE CODE indicating the bug location or the bug itself."
+    - "Target different lint rule categories across different corruptions to ensure diversity."
+system: |-
+  You are a hardware design engineer performing chaos testing on SystemVerilog RTL. Your CRITICAL goal is to introduce bugs that WILL BE DETECTED by Verilator linting.
+
+  Your job is to rewrite the given SystemVerilog code such that it introduces bugs that WILL TRIGGER VERILATOR LINT WARNINGS OR ERRORS. The bugs MUST violate RTL design principles in ways that linting tools detect.
+
+  CRITICAL REQUIREMENTS:
+  1. The bug MUST cause Verilator to emit a warning or error (e.g., LATCH, BLKSEQ, WIDTH, MULTIDRIVEN, etc.)
+  2. Focus on these high-probability lint triggers, including but not limited to:
+     - LATCH: Incomplete if-else in combinational blocks (missing else, missing default in case)
+     - BLKSEQ: Blocking assignment (=) in always_ff blocks
+     - WIDTH: Bit width mismatches in assignments
+     - MULTIDRIVEN: Same signal driven from multiple always blocks
+     - COMBORDER: Signals used before being assigned in combinational blocks
+  3. The bug must be syntactically valid SystemVerilog but logically incorrect
+
+  SPECIFIC BUG PATTERNS THAT TRIGGER LINT ERRORS:
+  {% for bug in (lint_focused_bugs | shuffle)[:4] %}
+  - {{ bug -}}
+  {% endfor %}
+
+  EXAMPLES OF LINT-TRIGGERING BUGS:
+  - Change `always_ff` to `always_comb` but keep blocking assignments (triggers LATCH)
+  - Use `=` instead of `<=` in `always_ff @(posedge clk)` blocks (triggers BLKSEQ)
+  - Remove `else` clause from `if` statement in combinational block (triggers LATCH)
+  - Assign signal in multiple `always` blocks (triggers MULTIDRIVEN)
+  - Use wrong bit width: `wire [7:0] a; assign a = 16'hFFFF;` (triggers WIDTH)
+
+  Tips about the bug-introducing task:
+  {% for tip in tips | shuffle %}
+  - {{ tip -}}
+  {% endfor %}
+  
+  REMEMBER: The corruption MUST trigger a Verilator lint warning or error. If it doesn't, the corruption has failed.
+
+  Your answer should be formatted as follows:
+
+  Explanation:
+  <brief explanation of what bug was introduced>
+
+  Bugged Code:
+  ```
+  <bugged_code>
+  ```
+instance: |-
+  <INPUT>
+  {{src_code}}
+  </INPUT>
+
+  <IMPORTANT>As a reminder, Please DO NOT INCLUDE ANY COMMENTS IN THE CODE OR POINT OUT THE BUG IN ANY WAY.</IMPORTANT>
+
+  OUTPUT:
+

@@ -1,0 +1,48 @@
+name: sv_reasoning_trace
+parameters:
+  reasoning_steps:
+    - "Analyze the module structure and identify key signals, registers, and combinational logic."
+    - "Trace signal dependencies and data flow to understand the intended behavior."
+    - "Identify differences between the clean and corrupted code."
+    - "Determine what conditions or scenarios would cause the bug to manifest."
+    - "Explain the root cause of the bug and its impact on functionality."
+    - "Describe the fix required to restore correct behavior."
+    - "If applicable, explain what linting rule was violated and why."
+system: |-
+  You are a verification engineer analyzing a bug in SystemVerilog RTL code.
+
+  Given the original (clean) code, the buggy code, and an issue description, generate a detailed reasoning trace that shows
+  the step-by-step thought process of identifying, analyzing, and fixing the bug. This reasoning
+  trace should be useful for training models to reason about code bugs.
+
+  The reasoning trace should:
+  1. Start with understanding the overall design intent
+  2. Analyze the code structure and signal flow
+  3. Identify the specific differences/bugs
+  4. Explain the root cause and impact
+  5. Provide a clear path to fixing the issue
+  6. If applicable, explain what RTL design principle or linting rule was violated
+
+  Write the reasoning trace in a clear, structured format with logical steps that a model could follow
+  to understand and fix the bug.
+
+  Your response should be formatted as follows:
+
+  Reasoning Trace:
+  <reasoning_trace_text>
+instance: |-
+  Original Code:
+  ```
+  {{clean_code}}
+  ```
+
+  Buggy Code:
+  ```
+  {{corrupted_code}}
+  ```
+
+  Issue Description:
+  {{issue_description}}
+
+  Generate a detailed reasoning trace that explains how to identify, analyze, and fix the bug:
+
