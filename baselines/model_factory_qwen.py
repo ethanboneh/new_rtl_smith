@@ -41,16 +41,18 @@ class TinkerQwenInstance:
         model_path: Optional[str] = None,
         base_model: str = "Qwen/Qwen3-8B",
         temperature: float = 0.6,
-        max_tokens: int = 4096,
+        max_tokens: int = 16384,
     ):
         self.context = context
         self.model = model
         self.model_path = model_path  # Tinker checkpoint path (e.g., tinker://...)
         self.base_model = base_model
         self.temperature = temperature
-        # Optimize max_tokens: most Verilog modules are < 2000 tokens, but allow some headroom
-        self.max_tokens = max_tokens if max_tokens > 0 else 4096
+        # Allow large max_tokens to accommodate reasoning + code generation
+        # Qwen3-8B supports up to 32K context, we use 16K for output to leave room for input
+        self.max_tokens = max_tokens if max_tokens > 0 else 16384
         self.debug = False
+        self.save_prompts = True  # Save prompts to disk for debugging
         self._sampling_client = None
         self._tokenizer = None
         self._renderer = None
@@ -133,17 +135,26 @@ class TinkerQwenInstance:
         
         # Build messages - use context as system prompt if it's a string
         system_prompt = self.context if isinstance(self.context, str) else "You are a helpful assistant."
+        
+        # Add instruction to wrap final code in markdown code blocks for reliable extraction
+        # Keep thinking enabled but ensure code is properly marked
+        user_prompt = prompt + "\n\nAfter your reasoning, provide the final Verilog/SystemVerilog code wrapped in ```systemverilog and ``` markers."
+        
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
+            {"role": "user", "content": user_prompt}
         ]
         
-        # Log the prompt if requested
-        if prompt_log and self.debug:
+        # Log the prompt if requested or save_prompts is enabled
+        if prompt_log and (self.debug or self.save_prompts):
             try:
-                os.makedirs(os.path.dirname(prompt_log), exist_ok=True)
+                prompt_dir = os.path.dirname(prompt_log)
+                if prompt_dir:
+                    os.makedirs(prompt_dir, exist_ok=True)
                 with open(prompt_log, "w") as f:
-                    f.write(f"System: {system_prompt}\n\nUser: {prompt}\n")
+                    f.write(f"=== SYSTEM PROMPT ===\n{system_prompt}\n\n")
+                    f.write(f"=== USER PROMPT ===\n{user_prompt}\n")
+                logger.info(f"Saved prompt to {prompt_log}")
             except Exception as e:
                 logger.warning(f"Failed to write prompt log: {e}")
         
@@ -157,6 +168,15 @@ class TinkerQwenInstance:
         
         # Extract code from response (strips reasoning traces)
         code = self._extract_code(response)
+        
+        # Save full response to prompt log if enabled
+        if prompt_log and self.save_prompts:
+            try:
+                with open(prompt_log, "a") as f:
+                    f.write(f"\n\n=== FULL MODEL RESPONSE ===\n{response}\n")
+                    f.write(f"\n\n=== EXTRACTED CODE ===\n{code}\n")
+            except Exception as e:
+                logger.warning(f"Failed to append response to prompt log: {e}")
         
         if not code:
             logger.warning("No code extracted from response")

@@ -1209,6 +1209,9 @@ def invert_reset_polarity(module: VerilogModule, likelihood: float = 0.5) -> Mod
         )
     
     mod_type, original, modified = modifications_made[0]
+    # Calculate line number safely
+    pos = module.source_code.find(original)
+    line_number = module.source_code[:pos].count('\n') + 1 if pos >= 0 else 1
     return ModificationResult(
         success=True,
         modified_code=new_code,
@@ -1216,7 +1219,7 @@ def invert_reset_polarity(module: VerilogModule, likelihood: float = 0.5) -> Mod
         description=f"Inverted reset polarity in {mod_type}",
         original_snippet=original,
         modified_snippet=modified,
-        line_number=module.source_code.find(original) // len(module.source_code.split('\n')[0]) + 1
+        line_number=line_number
     )
 
 

@@ -26,6 +26,16 @@ CVDP_DATASET_PATH = os.path.join(
     "cvdp_v1.0.2_nonagentic_code_generation_no_commercial.jsonl"
 )
 
+# RTLLM dataset (local)
+RTLLM_PATH = "/sailhome/ethanboneh/RTLLM"
+
+# Corruption datasets (generated)
+CORRUPTION_DATASETS = {
+    "rtllm_from_spec": os.path.join(PROJECT_ROOT, "llm_corruption", "outputs", "rtllm_from_spec_test.jsonl"),
+    "rtllm_llm_corruptions": os.path.join(PROJECT_ROOT, "llm_corruption", "outputs", "rtllm_llm_corruptions.jsonl"),
+    "procedural_corruptions": os.path.join(PROJECT_ROOT, "procedural_modification", "outputs", "procedural_corruptions.jsonl"),
+}
+
 # ==============================================================================
 # Model Configuration
 # ==============================================================================
@@ -42,6 +52,12 @@ HF_DATASETS = {
     "instruction": "wilyub/VeriThoughtsTrainSetConsistentInstruction",
 }
 
+# Local dataset types (not from HuggingFace)
+LOCAL_DATASETS = {
+    "rtllm": "rtllm",  # Pure RTLLM spec->code
+    "rtllm_corruption": "rtllm_corruption",  # RTLLM + corruption data for debugging training
+}
+
 # ==============================================================================
 # Training Hyperparameters
 # ==============================================================================
@@ -49,10 +65,10 @@ HF_DATASETS = {
 DEFAULT_TRAINING_CONFIG = {
     "learning_rate": 5e-4,
     "lr_schedule": "linear",
-    "num_epochs": 1,
+    "num_epochs": 3,
     "lora_rank": 64,
     "batch_size": 64,
-    "max_length": 8192,
+    "max_length": 16384,
     "save_every": 100,
     "eval_every": 50,
     "infrequent_eval_every": 500,

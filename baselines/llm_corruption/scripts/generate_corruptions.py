@@ -119,6 +119,138 @@ def extract_code_from_entry(entry: Dict) -> Optional[str]:
     return None
 
 
+def extract_spec_from_entry(entry: Dict) -> Optional[str]:
+    """
+    Extract the specification/instruction from a VeriThoughts entry.
+    
+    VeriThoughts format has:
+    - 'instruction': The prompt/specification describing what to build
+    - 'input': Optional additional input
+    """
+    spec_parts = []
+    
+    if 'instruction' in entry:
+        spec_parts.append(entry['instruction'])
+    
+    if 'input' in entry and entry['input']:
+        spec_parts.append(f"\nAdditional Input:\n{entry['input']}")
+    
+    return '\n'.join(spec_parts) if spec_parts else None
+
+
+def process_entry_from_spec(
+    entry: Dict,
+    llm_client: LLMClient,
+    linter: Optional[VerilatorLinter],
+    max_retries: int = 3,
+    skip_linter: bool = False
+) -> Optional[Dict]:
+    """
+    Generate buggy code from spec only (no gold code given to LLM).
+    
+    This creates more diverse/nuanced bugs since the LLM writes code
+    from scratch rather than modifying existing code.
+    
+    Returns:
+        Dictionary with corruption data or None if failed
+    """
+    clean_code = extract_code_from_entry(entry)
+    if not clean_code:
+        print(f"  Warning: Could not extract gold code from entry")
+        return None
+    
+    spec_description = extract_spec_from_entry(entry)
+    if not spec_description:
+        print(f"  Warning: Could not extract spec from entry")
+        return None
+    
+    for attempt in range(max_retries):
+        try:
+            print(f"  Attempt {attempt + 1}/{max_retries}: Generating buggy code from spec...")
+            
+            feedback = ""
+            if attempt > 0:
+                feedback = (
+                    "\n\nPREVIOUS ATTEMPT FAILED. "
+                    "Make sure to:\n"
+                    "1. Match the module interface EXACTLY as specified\n"
+                    "2. Introduce a subtle but real bug\n"
+                    "3. Do not include any comments\n"
+                    "4. Ensure the code compiles\n"
+                )
+            
+            # Generate buggy code from spec
+            buggy_result = llm_client.generate_buggy_from_spec(
+                spec_description,
+                feedback=feedback
+            )
+            buggy_code = buggy_result['buggy_code']
+            
+            if not buggy_code:
+                print(f"    Failed: No buggy code generated")
+                continue
+            
+            # Linter verification (optional)
+            lint_result = None
+            if not skip_linter and linter is not None:
+                print(f"    Verifying with linter...")
+                buggy_lint = linter.lint_code(buggy_code)
+                lint_result = {
+                    'buggy_violated_rules': buggy_lint['violated_rules'],
+                    'buggy_has_errors': buggy_lint['has_errors'],
+                }
+            elif skip_linter:
+                print(f"    Skipping linter verification...")
+                lint_result = {
+                    'buggy_violated_rules': set(),
+                    'buggy_has_errors': False,
+                }
+            
+            # Generate issue description
+            print(f"    Generating issue description...")
+            issue_description = llm_client.generate_issue_description(
+                clean_code,
+                buggy_code
+            )
+            
+            # Generate reasoning trace
+            print(f"    Generating reasoning trace...")
+            reasoning_trace = llm_client.generate_reasoning_trace(
+                clean_code,
+                buggy_code,
+                issue_description
+            )
+            
+            # Success!
+            return {
+                'original_entry': entry,
+                'generation_mode': 'from_spec',
+                'clean_code': clean_code,
+                'corrupted_code': buggy_code,
+                'corruption_explanation': f"Bug Type: {buggy_result['bug_type']}\n{buggy_result['bug_description']}",
+                'bug_type': buggy_result['bug_type'],
+                'bug_description': buggy_result['bug_description'],
+                'issue_description': issue_description,
+                'reasoning_trace': reasoning_trace,
+                'lint_result': {
+                    'buggy_violated_rules': list(lint_result['buggy_violated_rules']) if lint_result else [],
+                    'buggy_has_errors': lint_result['buggy_has_errors'] if lint_result else False,
+                    'linter_skipped': skip_linter,
+                },
+                'timestamp': datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            print(f"    Error: {e}")
+            import traceback
+            traceback.print_exc()
+            if attempt == max_retries - 1:
+                print(f"  Failed after {max_retries} attempts")
+                return None
+    
+    return None
+
+
 def process_entry(
     entry: Dict,
     llm_client: LLMClient,
@@ -327,6 +459,19 @@ def main():
         default=None,
         help="Path to verilator binary (default: 'verilator' from PATH)"
     )
+    parser.add_argument(
+        "--corruptions-per-sample",
+        type=int,
+        default=1,
+        help="Number of different corruptions to generate per input sample (default: 1)"
+    )
+    parser.add_argument(
+        "--from-spec",
+        action="store_true",
+        default=False,
+        help="Generate buggy code from spec only (no gold code given to LLM). "
+             "This creates more diverse/nuanced bugs since LLM writes from scratch."
+    )
     
     args = parser.parse_args()
     
@@ -365,33 +510,66 @@ def main():
         data = data[:args.max_entries]
         print(f"Processing first {len(data)} entries")
     
+    # Print mode info
+    if args.from_spec:
+        print("\n*** FROM-SPEC MODE: Generating buggy code from specification only ***")
+        print("    (LLM will not see gold code, creating more diverse bugs)\n")
+    
     # Process entries
     results = []
     successful = 0
     failed = 0
+    corruptions_per_sample = args.corruptions_per_sample
     
     for i, entry in enumerate(data):
-        print(f"\nProcessing entry {i + 1}/{len(data)}...")
+        print(f"\nProcessing entry {i + 1}/{len(data)} (generating up to {corruptions_per_sample} corruptions)...")
         
-        result = process_entry(
-            entry,
-            llm_client,
-            linter,
-            max_retries=args.max_retries,
-            require_lint_violations=args.require_lint,
-            skip_linter=args.skip_linter
-        )
-        
-        if result:
-            results.append(result)
-            successful += 1
-            if args.skip_linter:
-                print(f"  ✓ Success! (linter skipped)")
+        entry_successes = 0
+        for corruption_idx in range(corruptions_per_sample):
+            if corruptions_per_sample > 1:
+                print(f"  Corruption {corruption_idx + 1}/{corruptions_per_sample}:")
+            
+            # Choose processing function based on mode
+            if args.from_spec:
+                result = process_entry_from_spec(
+                    entry,
+                    llm_client,
+                    linter,
+                    max_retries=args.max_retries,
+                    skip_linter=args.skip_linter
+                )
             else:
-                print(f"  ✓ Success! Violated rules: {result['lint_result']['new_violated_rules']}")
+                result = process_entry(
+                    entry,
+                    llm_client,
+                    linter,
+                    max_retries=args.max_retries,
+                    require_lint_violations=args.require_lint,
+                    skip_linter=args.skip_linter
+                )
+            
+            if result:
+                # Add corruption index to result for tracking
+                result['corruption_index'] = corruption_idx
+                results.append(result)
+                entry_successes += 1
+                
+                if args.from_spec:
+                    bug_type = result.get('bug_type', 'unknown')
+                    print(f"    ✓ Success! Bug type: {bug_type}")
+                elif args.skip_linter:
+                    print(f"    ✓ Success! (linter skipped)")
+                else:
+                    print(f"    ✓ Success! Violated rules: {result['lint_result']['new_violated_rules']}")
+            else:
+                print(f"    ✗ Failed")
+        
+        if entry_successes > 0:
+            successful += 1
         else:
             failed += 1
-            print(f"  ✗ Failed")
+        
+        print(f"  Entry result: {entry_successes}/{corruptions_per_sample} corruptions generated")
     
     # Save results
     print(f"\nSaving results to {args.output}...")
@@ -402,10 +580,26 @@ def main():
             f.write(json.dumps(result) + '\n')
     
     print(f"\nSummary:")
-    print(f"  Total entries: {len(data)}")
-    print(f"  Successful: {successful}")
-    print(f"  Failed: {failed}")
-    print(f"  Success rate: {successful/len(data)*100:.1f}%")
+    print(f"  Mode: {'from-spec' if args.from_spec else 'corrupt-gold'}")
+    print(f"  Total input entries: {len(data)}")
+    print(f"  Corruptions per sample: {corruptions_per_sample}")
+    print(f"  Entries with at least one success: {successful}")
+    print(f"  Entries with all failures: {failed}")
+    print(f"  Total corruptions generated: {len(results)}")
+    print(f"  Entry success rate: {successful/len(data)*100:.1f}%")
+    if len(data) * corruptions_per_sample > 0:
+        print(f"  Corruption success rate: {len(results)/(len(data)*corruptions_per_sample)*100:.1f}%")
+    
+    # Show bug type distribution for from-spec mode
+    if args.from_spec and results:
+        print(f"\nBug type distribution:")
+        bug_types = {}
+        for r in results:
+            bt = r.get('bug_type', 'unknown')
+            bug_types[bt] = bug_types.get(bt, 0) + 1
+        for bt, count in sorted(bug_types.items(), key=lambda x: -x[1]):
+            print(f"    {bt}: {count}")
+    
     print(f"\nResults saved to: {args.output}")
 
 

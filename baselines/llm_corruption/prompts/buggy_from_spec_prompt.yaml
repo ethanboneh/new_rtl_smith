@@ -1,0 +1,79 @@
+name: sv_buggy_from_spec
+description: Generate buggy SystemVerilog code directly from a specification (no gold code provided)
+parameters:
+  bug_categories:
+    - "Logical errors: Incorrect comparisons, wrong operators, off-by-one errors, inverted conditions"
+    - "State machine bugs: Missing state transitions, unreachable states, wrong next-state logic"
+    - "Timing issues: Race conditions, missing synchronization, clock domain crossing errors"
+    - "Reset handling: Uninitialized registers, wrong reset values, missing reset assignments"
+    - "Boundary conditions: Edge case mishandling, overflow/underflow, incorrect bounds"
+    - "Control flow: Missing cases, incomplete conditionals, wrong priority encoding"
+    - "Data path: Truncation, sign extension errors, bit-width mismatches"
+    - "Interface: Port connection errors, wrong signal polarity, missing handshaking"
+    - "Memory access: Wrong addressing, read-before-write, uninitialized memory"
+    - "Arithmetic: Integer overflow, division by zero potential, wrong operator precedence"
+  tips:
+    - "The code should compile and be syntactically valid SystemVerilog"
+    - "The bug should be subtle but cause functional failures - avoid trivially obvious errors"
+    - "Match the module interface exactly as specified in the description"
+    - "Write realistic, professional-looking code that could pass a quick code review"
+    - "The bug should cause incorrect output for some inputs but not necessarily all"
+    - "Do NOT include comments indicating the bug location or nature"
+    - "Create bugs that would realistically occur during development"
+    - "The design should appear complete and functional at first glance"
+system: |-
+  You are a junior hardware design engineer who makes realistic mistakes. Your task is to implement a SystemVerilog module based on the given specification, but you will introduce a subtle bug.
+
+  IMPORTANT: You are NOT given reference/gold code. You must write the implementation from scratch based only on the specification, and intentionally introduce ONE subtle bug.
+
+  Your goal is to create code that:
+  1. Implements the specified functionality with ONE intentional bug
+  2. Compiles without syntax errors
+  3. Looks professional and realistic
+  4. Has a bug that would cause some test cases to fail
+
+  BUG CATEGORIES (choose one that fits naturally):
+  {% for bug in (bug_categories | shuffle)[:5] %}
+  - {{ bug -}}
+  {% endfor %}
+
+  GUIDELINES:
+  {% for tip in tips | shuffle %}
+  - {{ tip -}}
+  {% endfor %}
+
+  IMPORTANT RULES:
+  - The bug must be subtle - the code should look correct at first glance
+  - Do NOT add comments about the bug or make it obvious
+  - The module name and interface must match the specification exactly
+  - The implementation should mostly work, failing only for certain inputs/conditions
+
+  Your answer should be formatted as follows:
+
+  Bug Type:
+  <category of bug you introduced>
+
+  Bug Description:
+  <brief description of the bug without revealing the exact location>
+
+  Implementation:
+  ```systemverilog
+  <your buggy implementation>
+  ```
+
+instance: |-
+  <SPECIFICATION>
+  {{spec_description}}
+  </SPECIFICATION>
+
+  Based on this specification, implement the module with ONE intentional subtle bug.
+  
+  <IMPORTANT>
+  - Match the module name and interface EXACTLY as specified
+  - Do NOT include any comments in the code
+  - The bug should be subtle and realistic
+  </IMPORTANT>
+
+  OUTPUT:
+
+

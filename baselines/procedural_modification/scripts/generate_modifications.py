@@ -443,6 +443,8 @@ def process_entry(
     verify_different: bool = True,
     formal_verify: bool = False,
     formal_timeout: int = 30,
+    stacked_modifications: int = 1,
+    used_modifications: Optional[set] = None,
 ) -> Optional[Dict]:
     """
     Process a single entry to generate procedural modification.
@@ -456,6 +458,8 @@ def process_entry(
         verify_different: Check that code actually changed (default: True)
         formal_verify: Use formal verification to check functional difference
         formal_timeout: Timeout for formal verification in seconds
+        stacked_modifications: Number of modifications to stack/combine (default: 1)
+        used_modifications: Set of modification types already used for this entry (to avoid duplicates)
         
     Returns:
         Dictionary with modification data or None if failed
@@ -476,22 +480,65 @@ def process_entry(
     if not applicable:
         return None
     
-    # Apply modification
-    if specific_modification:
-        if specific_modification not in MODIFICATION_BY_NAME:
-            print(f"  Unknown modification: {specific_modification}")
+    # Filter out already used modifications if provided
+    if used_modifications:
+        applicable = [m for m in applicable if m.name not in used_modifications]
+        if not applicable:
             return None
-        result = MODIFICATION_BY_NAME[specific_modification].apply_fn(module, likelihood)
-    else:
-        result = apply_random_modification(module, likelihood)
     
-    if not result.success:
+    # Track all modifications applied (for stacking)
+    applied_modifications = []
+    all_descriptions = []
+    all_original_snippets = []
+    all_modified_snippets = []
+    all_line_numbers = []
+    
+    current_code = clean_code
+    current_module = module
+    
+    # Apply stacked modifications
+    for stack_idx in range(stacked_modifications):
+        # Re-parse if we've modified the code
+        if stack_idx > 0:
+            try:
+                current_module = parser.parse(current_code)
+                # Get applicable modifications for the modified code
+                applicable = get_applicable_modifications(current_module)
+                # Filter out already applied modification types to get variety
+                applicable = [m for m in applicable if m.name not in [am[0] for am in applied_modifications]]
+                if not applicable:
+                    break  # No more applicable modifications
+            except Exception as e:
+                break  # Parse error, stop stacking
+        
+        # Apply modification
+        if specific_modification and stack_idx == 0:
+            if specific_modification not in MODIFICATION_BY_NAME:
+                print(f"  Unknown modification: {specific_modification}")
+                return None
+            result = MODIFICATION_BY_NAME[specific_modification].apply_fn(current_module, likelihood)
+        else:
+            result = apply_random_modification(current_module, likelihood)
+        
+        if not result.success:
+            if stack_idx == 0:
+                return None  # First modification must succeed
+            break  # Subsequent modifications can fail
+        
+        # Update tracking
+        applied_modifications.append((result.modification_type, result.line_number))
+        all_descriptions.append(result.description)
+        all_original_snippets.append(result.original_snippet)
+        all_modified_snippets.append(result.modified_snippet)
+        all_line_numbers.append(result.line_number)
+        current_code = result.modified_code
+    
+    if not applied_modifications:
         return None
     
     # Verify the code actually changed
     if verify_different:
-        if not codes_are_different(clean_code, result.modified_code):
-            # Code didn't actually change - modification failed
+        if not codes_are_different(clean_code, current_code):
             return None
     
     # Optional: Formal verification
@@ -501,41 +548,86 @@ def process_entry(
             from formal_verify import verify_modification, VerificationResult
             formal_result = verify_modification(
                 clean_code, 
-                result.modified_code, 
+                current_code, 
                 timeout=formal_timeout
             )
             if not formal_result.is_valid_modification:
-                # Formal verification says codes are equivalent - skip
                 return None
         except ImportError:
-            pass  # formal_verify not available
+            pass
         except Exception as e:
-            pass  # Verification failed, continue anyway
+            pass
     
-    # Generate issue description
-    issue_description = ISSUE_DESCRIPTIONS.get(
-        result.modification_type,
-        f"The buggy code has a {result.modification_type.replace('_', ' ')} error. {result.description}"
-    )
+    # Generate combined issue description for stacked modifications
+    if len(applied_modifications) == 1:
+        mod_type = applied_modifications[0][0]
+        issue_description = ISSUE_DESCRIPTIONS.get(
+            mod_type,
+            f"The buggy code has a {mod_type.replace('_', ' ')} error. {all_descriptions[0]}"
+        )
+        modification_type = mod_type
+    else:
+        # Combined description for stacked modifications
+        mod_types = [m[0] for m in applied_modifications]
+        modification_type = "+".join(mod_types)
+        issue_parts = []
+        for i, (mod_type, _) in enumerate(applied_modifications):
+            desc = ISSUE_DESCRIPTIONS.get(
+                mod_type,
+                f"The code has a {mod_type.replace('_', ' ')} error."
+            )
+            issue_parts.append(f"Bug {i+1} ({mod_type}): {desc}")
+        issue_description = (
+            f"The buggy code has {len(applied_modifications)} stacked bugs:\n\n" +
+            "\n\n".join(issue_parts)
+        )
     
     # Generate reasoning trace
-    reasoning_trace = generate_reasoning_trace(result.modification_type, result)
+    if len(applied_modifications) == 1:
+        # Create a simple result object for single modification
+        class SimpleResult:
+            def __init__(self, mod_type, desc, line, orig, mod):
+                self.modification_type = mod_type
+                self.description = desc
+                self.line_number = line
+                self.original_snippet = orig
+                self.modified_snippet = mod
+        
+        simple_result = SimpleResult(
+            applied_modifications[0][0],
+            all_descriptions[0],
+            all_line_numbers[0],
+            all_original_snippets[0],
+            all_modified_snippets[0]
+        )
+        reasoning_trace = generate_reasoning_trace(applied_modifications[0][0], simple_result)
+    else:
+        # Combined reasoning trace for stacked modifications
+        reasoning_parts = [f"This code contains {len(applied_modifications)} stacked bugs that need to be fixed:\n"]
+        for i, (mod_type, line_num) in enumerate(applied_modifications):
+            reasoning_parts.append(f"\n--- Bug {i+1}: {mod_type} (line {line_num}) ---")
+            reasoning_parts.append(f"Description: {all_descriptions[i]}")
+            reasoning_parts.append(f"Original: {all_original_snippets[i]}")
+            reasoning_parts.append(f"Modified: {all_modified_snippets[i]}")
+        reasoning_trace = "\n".join(reasoning_parts)
     
     # Build result dict
     result_dict = {
         'original_entry': entry,
         'clean_code': clean_code,
-        'corrupted_code': result.modified_code,
-        'corruption_explanation': result.description,
-        'modification_type': result.modification_type,
-        'modification_line': result.line_number,
-        'original_snippet': result.original_snippet,
-        'modified_snippet': result.modified_snippet,
+        'corrupted_code': current_code,
+        'corruption_explanation': " | ".join(all_descriptions),
+        'modification_type': modification_type,
+        'modification_line': all_line_numbers[0] if len(all_line_numbers) == 1 else all_line_numbers,
+        'original_snippet': all_original_snippets[0] if len(all_original_snippets) == 1 else all_original_snippets,
+        'modified_snippet': all_modified_snippets[0] if len(all_modified_snippets) == 1 else all_modified_snippets,
         'issue_description': issue_description,
         'reasoning_trace': reasoning_trace,
         'complexity': calculate_complexity(module),
-        'applicable_modifications': [m.name for m in applicable],
-        'verified_different': True,  # We verified codes are different
+        'applicable_modifications': [m.name for m in get_applicable_modifications(module)],
+        'stacked_count': len(applied_modifications),
+        'applied_modifications': [m[0] for m in applied_modifications],
+        'verified_different': True,
         'timestamp': datetime.now().isoformat(),
     }
     
@@ -628,6 +720,18 @@ def main():
         default=30,
         help="Timeout for formal verification in seconds (default: 30)"
     )
+    parser.add_argument(
+        "--corruptions-per-sample",
+        type=int,
+        default=1,
+        help="Number of different corruptions to generate per input sample (default: 1)"
+    )
+    parser.add_argument(
+        "--stacked-modifications",
+        type=int,
+        default=1,
+        help="Number of modification types to stack/combine on each corruption (default: 1)"
+    )
     
     args = parser.parse_args()
     
@@ -671,25 +775,42 @@ def main():
     successful = 0
     failed = 0
     modification_counts = {}
+    corruptions_per_sample = args.corruptions_per_sample
+    stacked_modifications = args.stacked_modifications
     
     from tqdm import tqdm
     
     for i, entry in enumerate(tqdm(data, desc="Processing")):
-        result = process_entry(
-            entry,
-            verilog_parser,
-            specific_modification=args.modification,
-            likelihood=args.likelihood,
-            verify_different=args.verify_different,
-            formal_verify=args.formal_verify,
-            formal_timeout=args.formal_timeout,
-        )
+        entry_successes = 0
+        used_modifications = set()  # Track used modifications to get variety
         
-        if result:
-            results.append(result)
+        for corruption_idx in range(corruptions_per_sample):
+            result = process_entry(
+                entry,
+                verilog_parser,
+                specific_modification=args.modification,
+                likelihood=args.likelihood,
+                verify_different=args.verify_different,
+                formal_verify=args.formal_verify,
+                formal_timeout=args.formal_timeout,
+                stacked_modifications=stacked_modifications,
+                used_modifications=used_modifications if corruption_idx > 0 else None,
+            )
+            
+            if result:
+                result['corruption_index'] = corruption_idx
+                results.append(result)
+                entry_successes += 1
+                mod_type = result['modification_type']
+                modification_counts[mod_type] = modification_counts.get(mod_type, 0) + 1
+                # Track used modification types for variety in subsequent corruptions
+                if isinstance(result.get('applied_modifications'), list):
+                    used_modifications.update(result['applied_modifications'])
+                else:
+                    used_modifications.add(mod_type)
+        
+        if entry_successes > 0:
             successful += 1
-            mod_type = result['modification_type']
-            modification_counts[mod_type] = modification_counts.get(mod_type, 0) + 1
         else:
             failed += 1
     
@@ -705,10 +826,15 @@ def main():
     print(f"\n{'='*60}")
     print("Summary")
     print('='*60)
-    print(f"Total entries: {len(data)}")
-    print(f"Successful: {successful}")
-    print(f"Failed: {failed}")
-    print(f"Success rate: {successful/len(data)*100:.1f}%")
+    print(f"Total input entries: {len(data)}")
+    print(f"Corruptions per sample: {corruptions_per_sample}")
+    print(f"Stacked modifications: {stacked_modifications}")
+    print(f"Entries with at least one success: {successful}")
+    print(f"Entries with all failures: {failed}")
+    print(f"Total corruptions generated: {len(results)}")
+    print(f"Entry success rate: {successful/len(data)*100:.1f}%")
+    if len(data) * corruptions_per_sample > 0:
+        print(f"Corruption success rate: {len(results)/(len(data)*corruptions_per_sample)*100:.1f}%")
     
     print(f"\nModification distribution:")
     for mod_type, count in sorted(modification_counts.items(), key=lambda x: -x[1]):

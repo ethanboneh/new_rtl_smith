@@ -315,4 +315,88 @@ class LLMClient:
         if "Reasoning Trace:" in response:
             return response.split("Reasoning Trace:", 1)[1].strip()
         return response.strip()
+    
+    def generate_buggy_from_spec(
+        self,
+        spec_description: str,
+        template_path: Optional[str] = None,
+        feedback: str = ""
+    ) -> Dict[str, str]:
+        """
+        Generate buggy code directly from a specification (no gold code).
+        
+        This creates more diverse/nuanced bugs since the LLM writes code
+        from scratch rather than modifying existing code.
+        
+        Args:
+            spec_description: The specification/description of the design
+            template_path: Path to prompt template
+            feedback: Optional feedback from previous attempts
+        
+        Returns:
+            Dictionary with 'bug_type', 'bug_description', 'buggy_code', 'raw_response'
+        """
+        if template_path is None:
+            template_path = os.path.join(
+                os.path.dirname(__file__),
+                "..",
+                "prompts",
+                "buggy_from_spec_prompt.yaml"
+            )
+        
+        template = self.load_prompt_template(template_path)
+        system, user = self.format_prompt(template, spec_description=spec_description)
+        
+        # Add feedback if provided
+        if feedback:
+            user = user + feedback
+        
+        response = self.generate(
+            system_prompt=system,
+            user_prompt=user,
+            temperature=0.9,  # Higher temperature for more diverse bugs
+            max_tokens=4096
+        )
+        
+        # Parse response
+        bug_type = ""
+        bug_description = ""
+        buggy_code = ""
+        
+        # Extract bug type
+        if "Bug Type:" in response:
+            parts = response.split("Bug Type:", 1)
+            if len(parts) > 1:
+                bug_type = parts[1].split("Bug Description:")[0].strip()
+                if "\n" in bug_type:
+                    bug_type = bug_type.split("\n")[0].strip()
+        
+        # Extract bug description
+        if "Bug Description:" in response:
+            parts = response.split("Bug Description:", 1)
+            if len(parts) > 1:
+                bug_description = parts[1].split("Implementation:")[0].strip()
+        
+        # Extract code block
+        code_block_pattern = r'```(?:systemverilog|verilog|sv)?\n(.*?)```'
+        matches = re.findall(code_block_pattern, response, re.DOTALL)
+        if matches:
+            buggy_code = matches[-1].strip()
+        else:
+            # Fallback: try any code block
+            code_block_pattern = r'```\n?(.*?)```'
+            matches = re.findall(code_block_pattern, response, re.DOTALL)
+            if matches:
+                buggy_code = matches[-1].strip()
+        
+        # Remove any comments from the buggy code
+        if buggy_code:
+            buggy_code = self.remove_bug_comments(buggy_code)
+        
+        return {
+            'bug_type': bug_type,
+            'bug_description': bug_description,
+            'buggy_code': buggy_code,
+            'raw_response': response
+        }
 

@@ -13,6 +13,7 @@ Performance Optimizations:
 
 Usage:
     # Evaluate base Qwen3-8B (auto-detects threads)
+    # By default, only runs on cid003 (Spec-to-RTL) problems
     python evaluate_cvdp.py --model base
     
     # Evaluate with custom thread count
@@ -27,15 +28,27 @@ Usage:
     
     # Resume from existing results
     python evaluate_cvdp.py --model base --output-dir /path/to/results --resume
+    
+    # Run on a subset of problems (quick testing)
+    python evaluate_cvdp.py --model base --max-problems 5
+    
+    # Run a single specific problem
+    python evaluate_cvdp.py --model base --problem-id cvdp_copilot_16qam_mapper_0001
+    
+    # Filter by specific category IDs
+    python evaluate_cvdp.py --model base --cids cid003 cid004  # Spec-to-RTL and Code Modification
+    python evaluate_cvdp.py --model base --cids all           # All categories (no filter)
 """
 
 import argparse
 import json
 import os
+import random
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 import multiprocessing
 
 from config import (
@@ -67,6 +80,87 @@ def get_optimal_thread_count(requested: Optional[int] = None) -> int:
     return min(optimal, 16)
 
 
+def create_subset_dataset(
+    input_path: str,
+    max_problems: Optional[int] = None,
+    problem_ids: Optional[List[str]] = None,
+    cids: Optional[List[str]] = None,
+    seed: int = 42,
+) -> str:
+    """
+    Create a temporary subset of the CVDP dataset.
+    
+    Args:
+        input_path: Path to the full CVDP dataset JSONL file
+        max_problems: Maximum number of problems to include (balanced across categories)
+        problem_ids: Specific problem IDs to include (overrides max_problems)
+        cids: List of category IDs to filter by (e.g., ['cid003', 'cid004'])
+        seed: Random seed for reproducible sampling
+        
+    Returns:
+        Path to the temporary subset file
+    """
+    random.seed(seed)
+    
+    # Load the full dataset
+    with open(input_path, 'r') as f:
+        data = [json.loads(line) for line in f if line.strip()]
+    
+    print(f"Loaded {len(data)} problems from dataset")
+    
+    # Filter by CIDs if specified
+    if cids:
+        original_count = len(data)
+        data = [d for d in data if any(cid in d.get('categories', []) for cid in cids)]
+        print(f"Filtered to {len(data)} problems matching CIDs: {cids} (from {original_count})")
+    
+    if problem_ids:
+        # Filter to specific problem IDs
+        subset = [d for d in data if d.get('id') in problem_ids]
+        print(f"Filtered to {len(subset)} problems matching specified IDs")
+        if len(subset) == 0:
+            print(f"Warning: No problems found matching IDs: {problem_ids}")
+            print(f"Available IDs (first 5): {[d.get('id') for d in data[:5]]}")
+    elif max_problems:
+        # Group by category for balanced sampling
+        from collections import defaultdict
+        by_category = defaultdict(list)
+        for d in data:
+            category = d.get('categories', ['unknown'])[0] if d.get('categories') else 'unknown'
+            by_category[category].append(d)
+        
+        # Calculate problems per category
+        num_categories = len(by_category)
+        per_category = max(1, max_problems // num_categories)
+        remaining = max_problems - (per_category * num_categories)
+        
+        subset = []
+        for category, problems in by_category.items():
+            # Sample from this category
+            n = min(per_category + (1 if remaining > 0 else 0), len(problems))
+            if remaining > 0:
+                remaining -= 1
+            sampled = random.sample(problems, n)
+            subset.extend(sampled)
+            print(f"  {category}: {n} problems")
+        
+        # Shuffle the final subset
+        random.shuffle(subset)
+        subset = subset[:max_problems]  # Ensure we don't exceed max
+        print(f"Created balanced subset with {len(subset)} problems")
+    else:
+        subset = data
+    
+    # Write to temporary file
+    fd, temp_path = tempfile.mkstemp(suffix='.jsonl', prefix='cvdp_subset_')
+    with os.fdopen(fd, 'w') as f:
+        for item in subset:
+            f.write(json.dumps(item) + '\n')
+    
+    print(f"Subset dataset written to: {temp_path}")
+    return temp_path
+
+
 def run_cvdp_evaluation(
     model_type: str = "base",
     checkpoint_path: Optional[str] = None,
@@ -75,6 +169,9 @@ def run_cvdp_evaluation(
     threads: Optional[int] = None,
     timeout: int = 3600,
     resume: bool = False,
+    max_problems: Optional[int] = None,
+    problem_id: Optional[str] = None,
+    cids: Optional[List[str]] = None,
 ) -> str:
     """
     Run CVDP evaluation.
@@ -87,6 +184,9 @@ def run_cvdp_evaluation(
         threads: Number of parallel threads (None for auto-detect)
         timeout: Timeout in seconds
         resume: If True, resume from existing raw_result.json if available
+        max_problems: Maximum number of problems to evaluate (creates subset)
+        problem_id: Specific problem ID to evaluate (single problem mode)
+        cids: List of category IDs to filter by (e.g., ['cid003'])
         
     Returns:
         Path to the results directory
@@ -95,6 +195,34 @@ def run_cvdp_evaluation(
     if threads is None:
         threads = get_optimal_thread_count()
         print(f"Auto-detected optimal thread count: {threads}")
+    
+    # Determine which dataset to use
+    dataset_path = CVDP_DATASET_PATH
+    temp_subset_path = None
+    
+    if problem_id:
+        # Single problem mode
+        print(f"\n*** Single problem mode: {problem_id} ***")
+        temp_subset_path = create_subset_dataset(
+            CVDP_DATASET_PATH, 
+            problem_ids=[problem_id],
+            cids=cids,
+        )
+        dataset_path = temp_subset_path
+    elif max_problems or cids:
+        # Subset mode (by count and/or CID filter)
+        mode_desc = []
+        if max_problems:
+            mode_desc.append(f"{max_problems} problems")
+        if cids:
+            mode_desc.append(f"CIDs: {cids}")
+        print(f"\n*** Subset mode: {', '.join(mode_desc)} ***")
+        temp_subset_path = create_subset_dataset(
+            CVDP_DATASET_PATH,
+            max_problems=max_problems,
+            cids=cids,
+        )
+        dataset_path = temp_subset_path
     
     # Set up output directory
     if output_dir is None:
@@ -133,7 +261,7 @@ def run_cvdp_evaluation(
         script = os.path.join(CVDP_BENCHMARK_PATH, "run_samples.py")
         cmd = [
             sys.executable, script,
-            "-f", CVDP_DATASET_PATH,
+            "-f", dataset_path,
             "-l",
             "-m", model_name,
             "-c", factory_path,
@@ -148,7 +276,7 @@ def run_cvdp_evaluation(
         script = os.path.join(CVDP_BENCHMARK_PATH, "run_benchmark.py")
         cmd = [
             sys.executable, script,
-            "-f", CVDP_DATASET_PATH,
+            "-f", dataset_path,
             "-l",
             "-m", model_name,
             "-c", factory_path,
@@ -161,6 +289,9 @@ def run_cvdp_evaluation(
     print(f"  Model type: {model_type}")
     print(f"  Checkpoint: {checkpoint_path or 'base model'}")
     print(f"  Samples: {num_samples}")
+    print(f"  CIDs filter: {cids or 'all'}")
+    print(f"  Problems: {max_problems or problem_id or 'all'}")
+    print(f"  Dataset: {dataset_path}")
     print(f"  Output: {output_dir}")
     print(f"  Command: {' '.join(cmd)}")
     print()
@@ -180,6 +311,11 @@ def run_cvdp_evaluation(
     except subprocess.CalledProcessError as e:
         print(f"\n✗ Evaluation failed with return code {e.returncode}")
     
+    # Clean up temporary subset file
+    if temp_subset_path and os.path.exists(temp_subset_path):
+        os.remove(temp_subset_path)
+        print(f"Cleaned up temporary subset file")
+    
     # Save evaluation config
     config = {
         "model_type": model_type,
@@ -187,6 +323,9 @@ def run_cvdp_evaluation(
         "checkpoint_path": checkpoint_path,
         "num_samples": num_samples,
         "dataset": CVDP_DATASET_PATH,
+        "cids": cids,
+        "max_problems": max_problems,
+        "problem_id": problem_id,
         "timestamp": datetime.now().isoformat(),
     }
     config_path = os.path.join(output_dir, "eval_config.json")
@@ -306,11 +445,38 @@ def main():
         action="store_true",
         help="Resume evaluation from existing raw_result.json if available"
     )
+    parser.add_argument(
+        "--max-problems",
+        type=int,
+        default=None,
+        help="Maximum number of problems to evaluate (creates balanced subset for quick testing)"
+    )
+    parser.add_argument(
+        "--problem-id",
+        type=str,
+        default=None,
+        help="Specific problem ID to evaluate (single problem mode, e.g., cvdp_copilot_16qam_mapper_0001)"
+    )
+    parser.add_argument(
+        "--cids",
+        type=str,
+        nargs="+",
+        default=["cid003"],
+        help="Category IDs to filter by (default: cid003 for Spec-to-RTL). "
+             "Available: cid002 (Code Completion), cid003 (Spec-to-RTL), "
+             "cid004 (Code Modification), cid007 (Lint/Optimization), cid016 (Debugging). "
+             "Use --cids all to include all categories."
+    )
     
     args = parser.parse_args()
     
     # Create directories
     create_directories()
+    
+    # Handle --cids all
+    cids = args.cids
+    if cids and len(cids) == 1 and cids[0].lower() == "all":
+        cids = None  # None means no filtering
     
     if args.parse_only:
         # Just parse existing results
@@ -326,6 +492,9 @@ def main():
             threads=args.threads,
             timeout=args.timeout,
             resume=args.resume,
+            max_problems=args.max_problems,
+            problem_id=args.problem_id,
+            cids=cids,
         )
         
         # Parse and display results

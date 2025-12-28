@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """
-Train Qwen3-8B on VeriThoughts datasets using Tinker.
+Train Qwen3-8B on various RTL datasets using Tinker.
 
 This script implements SFT (Supervised Fine-Tuning) using Tinker's
 distributed training infrastructure.
+
+Supported datasets:
+- reasoning: VeriThoughts reasoning dataset (with <think> traces)
+- instruction: VeriThoughts instruction dataset (direct code)
+- rtllm: RTLLM benchmark (spec-to-code)
+- rtllm_corruption: RTLLM + corruption data (spec-to-code + debugging)
 
 Usage:
     # Train on reasoning dataset
@@ -11,6 +17,12 @@ Usage:
     
     # Train on instruction dataset  
     python train_tinker.py --dataset instruction
+    
+    # Train on RTLLM dataset
+    python train_tinker.py --dataset rtllm
+    
+    # Train on RTLLM + corruption dataset (for debugging capabilities)
+    python train_tinker.py --dataset rtllm_corruption
     
     # Train with subsampling
     python train_tinker.py --dataset reasoning --subsample 0.25
@@ -37,6 +49,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tinker-cookboo
 
 from tinker_cookbook import cli_utils, model_info
 from tinker_cookbook.renderers import TrainOnWhat, get_renderer
+
+# Use LAST_ASSISTANT_MESSAGE to only train on the code, not the reasoning trace
+DEFAULT_TRAIN_ON_WHAT = TrainOnWhat.LAST_ASSISTANT_MESSAGE
 from tinker_cookbook.supervised import train
 from tinker_cookbook.supervised.data import (
     SupervisedDatasetFromHFDataset,
@@ -101,7 +116,20 @@ def build_dataset_path(config: TrainingConfig) -> str:
         return config.dataset_path
     
     fraction_str = f"_{int(config.subsample_fraction*100)}pct" if config.subsample_fraction < 1.0 else ""
-    filename = f"verithoughts_{config.dataset_type}{fraction_str}_formatted.jsonl"
+    
+    # Different filename prefixes for different dataset types
+    if config.dataset_type in ["reasoning", "instruction"]:
+        filename = f"verithoughts_{config.dataset_type}{fraction_str}_formatted.jsonl"
+    elif config.dataset_type == "rtllm":
+        filename = f"rtllm{fraction_str}_formatted.jsonl"
+    elif config.dataset_type == "rtllm_reasoning":
+        filename = f"rtllm_reasoning{fraction_str}_formatted.jsonl"
+    elif config.dataset_type == "rtllm_corruption":
+        filename = f"rtllm_corruption{fraction_str}_formatted.jsonl"
+    else:
+        # Fallback for custom dataset types
+        filename = f"{config.dataset_type}{fraction_str}_formatted.jsonl"
+    
     return os.path.join(DATASETS_DIR, filename)
 
 
@@ -156,15 +184,18 @@ def load_dataset_from_jsonl(file_path: str, test_size: int, shuffle_seed: int):
     # Shuffle
     dataset = dataset.shuffle(seed=shuffle_seed)
     
-    # Split
-    if test_size > 0 and len(dataset) > test_size:
-        test_ds = dataset.select(range(test_size))
-        train_ds = dataset.select(range(test_size, len(dataset)))
+    # Split - use at most 10% of data for test, or test_size, whichever is smaller
+    # Also ensure we have enough training data
+    max_test = min(test_size, len(dataset) // 10)  # At most 10% for test
+    
+    if max_test > 0 and len(dataset) > max_test + 10:  # Need at least 10 training examples
+        test_ds = dataset.select(range(max_test))
+        train_ds = dataset.select(range(max_test, len(dataset)))
         print(f"Train: {len(train_ds)}, Test: {len(test_ds)}")
     else:
         train_ds = dataset
         test_ds = None
-        print(f"Train: {len(train_ds)}, Test: 0")
+        print(f"Train: {len(train_ds)}, Test: 0 (dataset too small for split)")
     
     return train_ds, test_ds
 
@@ -190,24 +221,33 @@ def build_dataset_builder(config: TrainingConfig):
             shuffle_seed=config.shuffle_seed,
         )
         
+        # Auto-adjust batch size for small datasets
+        # Need at least 1 batch to train!
+        effective_batch_size = config.batch_size
+        if len(train_ds) < config.batch_size:
+            effective_batch_size = max(1, len(train_ds))
+            print(f"WARNING: Dataset size ({len(train_ds)}) < batch_size ({config.batch_size})")
+            print(f"         Auto-adjusting batch_size to {effective_batch_size}")
+        
         # Get tokenizer and renderer
         tokenizer = get_tokenizer(config.model_name)
         renderer_name = model_info.get_recommended_renderer_name(config.model_name)
         renderer = get_renderer(renderer_name, tokenizer)
         
         # Define map function
+        # Use LAST_ASSISTANT_MESSAGE to only train on code, not reasoning traces
         def map_fn(row: dict) -> tinker.Datum:
             return conversation_to_datum(
                 row["messages"],
                 renderer,
                 max_length=config.max_length,
-                train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+                train_on_what=DEFAULT_TRAIN_ON_WHAT,
             )
         
         # Create supervised datasets
         train_dataset = SupervisedDatasetFromHFDataset(
             train_ds,
-            batch_size=config.batch_size,
+            batch_size=effective_batch_size,
             map_fn=map_fn,
         )
         
@@ -215,7 +255,7 @@ def build_dataset_builder(config: TrainingConfig):
         if test_ds is not None:
             test_dataset = SupervisedDatasetFromHFDataset(
                 test_ds,
-                batch_size=min(len(test_ds), config.batch_size),
+                batch_size=min(len(test_ds), effective_batch_size),
                 map_fn=map_fn,
             )
         
@@ -304,9 +344,9 @@ def main():
     parser.add_argument(
         "--dataset",
         type=str,
-        choices=["reasoning", "instruction"],
+        choices=["reasoning", "instruction", "rtllm", "rtllm_reasoning", "rtllm_corruption"],
         required=True,
-        help="Dataset type to train on"
+        help="Dataset type to train on: reasoning, instruction (VeriThoughts), rtllm, rtllm_reasoning (with synthetic reasoning), rtllm_corruption"
     )
     parser.add_argument(
         "--subsample",
